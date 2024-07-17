@@ -1,0 +1,383 @@
+---
+title: "JSM 2024 Data Expo"
+author: "Ujjayini Das"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(haven)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(survey)
+library(readxl)
+library(srvyr)
+library(data.table)
+library(corrplot)
+library(shiny)
+library(gridExtra)
+library(ggpubr)
+library(DT)
+library(plotly)
+library(aTSA)
+library(RColorBrewer)
+library(sandwich)
+library(lmtest)
+library(vars)
+library(tseries)
+library(kableExtra)
+library(formatR)
+library(shinyscreenshot)
+library(stargazer)
+library(forecast)
+library(openxlsx)
+library(ggforce)
+```
+
+## Reading Data
+```{r message=FALSE, warning=FALSE}
+# GSS respondent level data
+data_GSS1 <- read_excel("E:/PhD_Yearwise_Materials/PhD Year 2 Materials/SUMMER 2024/JSM 2024/JSM 2024_Ujjayini/JSM-2024-Analysis/Data/GSS.xlsx", sheet = "Data")
+#View(data_GSS1)
+data_GSS11 <- data_GSS1 %>% mutate(conpersonalcat=ifelse(conpersonal=="Can trust",1,2),
+confinancat =ifelse(confinan=="A GREAT DEAL",1,2),
+conbuscat =ifelse(conbus=="A GREAT DEAL",1,2),
+conclergcat =ifelse(conclerg=="A GREAT DEAL",1,2),
+coneduccat =ifelse(coneduc=="A GREAT DEAL",1,2),
+confedcat = ifelse(confed=="A GREAT DEAL",1,2),
+conlaborcat =ifelse(conlabor=="A GREAT DEAL",1,2),
+conpresscat =ifelse(conpress=="A GREAT DEAL",1,2),
+conmediccat =ifelse(conmedic=="A GREAT DEAL",1,2),
+contvcat = ifelse(contv=="A GREAT DEAL",1,2),
+conjudgecat =ifelse(conjudge=="A GREAT DEAL",1,2),
+conscicat = ifelse(consci=="A GREAT DEAL",1,2),
+conlegiscat =ifelse(conlegis=="A GREAT DEAL",1,2),
+conarmycat =ifelse(conarmy=="A GREAT DEAL",1,2))
+
+# Basic cleanup
+# keeping responses only with "A great deal" for all institutions and "can trust" for conpersonal
+
+data_GSS2 <- data_GSS11 %>% reframe(.by = year,
+          across(c(starts_with("con"),ends_with("cat")), ~{100*weighted.mean(.x < 2, wt = wtssall, na.rm = T)}))
+data_GSS22 <- data_GSS2[,-c(2:15)]
+colnames(data_GSS22) <- c("year","Interpersonal Trust","Financial Institutions","Major Companies","Organized Religion","Education","Federal Government","Organized Labor","Press","Medicine","Television","Supreme Court Judge","Scientific Community","Congress","Military")
+# Appending Response Rates 1975-2016
+data_GSS3 <- data_GSS22 %>% filter(!year %in% c(1972,1973,1974,2018,2021,2022)) %>%
+  mutate(Response_rate = c(75.6,75.1,76.5,73.5,75.9,77.5,79.4,78.6,78.7,75.6,75.4,77.3,77.6,73.9,77.8,82.4,77.8,76.1,75.6,70.0,70.1,70.4,71.2,70.4,70.3,71.4,60.2,61.3))
+data_GSS3 <- data_GSS3[-9,] # Removing year 1985 because trust was not measured that year
+#write.xlsx(data_GSS3,file = "GSS Data with NAs.xlsx")
+#GSS_without_NA <- zoo::na.approx(GSS_Data_with_NAs) #linear interpolation for interpersonal trust for two years 1977 and 1982
+data_GSS3 <- GSS_Data_with_NAs
+
+
+
+#svydesign(ids=~ vpsu,weights=~ wtssall,strata=~vstrat,data=df_gen_soc) 
+
+##Correlation matrix
+M <- cor(data_GSS3[,-1], use = "complete.obs")
+M_melted <- melt(M)
+corr_mat <- ggplot(data = M_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "yellow", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), space = "Lab", 
+                       name="Correlation") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 8, hjust = 1)) +
+  coord_fixed() +
+  ggtitle("Correlation Matrix Heatmap") +
+  xlab("Variables") +
+  ylab("Variables")
+ggsave(corr_mat, filename = "Correlation Matrix Heatmap.png",
+       device = "png",
+       height = 6, width = 5, units = "in" )
+
+##Visualization
+
+data_GSS4<- reshape2::melt(data_GSS3, id.vars = "year", variable.name = "dimension") %>% mutate(value = round(value,2))
+
+## Interactive dashboard
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Social Trust and Survey Response Rates"),
+  sidebarLayout(
+    sidebarPanel(actionButton("go", "Screenshot Report"),
+      selectInput(inputId = "dimension", label = "Select dimensions of social trust:",
+                         choices = c("Interpersonal Trust","Financial Institutions","Major Companies","Organized Religion","Education","Federal Government","Organized Labor","Press","Medicine","Television","Supreme Court Judge","Scientific Community","Congress","Military"),
+                  selected = "Interpersonal Trust"),
+    
+    ),
+    mainPanel(
+      plotOutput(outputId = "plot"),
+      br(), br(),
+      dataTableOutput(outputId = "tbl")
+                 
+    )
+  )
+)
+
+
+# Define server logic
+server <- function(input, output) {
+  
+  # Render plot
+  output$plot <- renderPlot({
+    data_GSS4%>%
+      filter(dimension==input$dimension)%>%
+      ggplot(aes(x = year))+
+      geom_line(aes(y = value))+
+      geom_line(aes(y = data_GSS4$value[data_GSS4$dimension=="Response_rate"], color = "Response_rate"))+labs(color = "Index")
+  })
+ output$tbl <- renderDT({data_GSS4 %>%
+     filter(dimension==input$dimension)%>%
+     mutate(rr = data_GSS4$value[data_GSS4$dimension=="Response_rate"]) %>%
+     datatable(class = 'cell-border stripe',
+               rownames = FALSE,
+               filter = "top",
+               options= list(pageLenth = 4),
+               colnames = c("Year", "Percentage Trust", "Response Rate"))
+   }
+   
+ )
+ observeEvent(input$go, {
+    screenshot()
+  })
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+```
+
+
+```{r plotting response rates with trust measures}
+RR_Trust_over_time <- data_GSS4 %>% filter(dimension != "Response_rate") %>% ggplot(aes(x=year,y=value)) +
+  geom_line(color="darkblue") + geom_smooth(method = "loess")+
+  facet_wrap_paginate(~dimension, ncol = 4, nrow = 4, page = 1)+ labs( y = "Percent Trust : A Great Deal", x = "Year", caption = "Response Rates and Trust Measures Over Time")+ geom_line(data = data_GSS3, aes(x=year, y=Response_rate, color = "Response_rate"))+ labs(color = "Index")+ geom_smooth(data = data_GSS3, aes(x=year, y=Response_rate, color = "Response_rate"),method = "loess") + theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.caption = element_text(hjust = 0),
+        axis.text.x = element_text(angle = 90, hjust = 1))
+ggsave(RR_Trust_over_time, filename = "Response Rates and Trust Measures over Time.png", device ="png",
+       height = 6, width = 5, units = "in")
+```
+
+
+```{r data from Gallup}
+data_gallup <- load("E:/PhD_Yearwise_Materials/PhD Year 2 Materials/SUMMER 2024/JSM 2024/JSM 2024_Ujjayini/JSM-2024-Analysis/Data/data_gallup.RDa")
+Item_Labels <- c(
+  "conclerg" = "Organized religion",
+  "conarmy"  = "Military",
+  "conjudge" = "Supreme Court Judge", 
+  "confinan" = "Financial Institutions",
+  "coneduc"  = "Education",
+  "conpress" = "Press",
+  "conlegis" = "Congress",
+  "contv"    = "Television",
+  "conlabor" = "Organized Labor",
+  "confed"   = "Federal Government", # Executive branch (GSS) v. Presidency (Gallup)
+  "conmedic" = "Medicine",
+  "conbus"   = "Major Companies",
+  "consci"   = "Scientific Community")
+
+gallup_data <- dplyr::select(gallup_data,c("REFYEAR","RESPONSE","conclerg","conjudge","coneduc","conlegis","conlabor","conmedic","consci","conarmy","confinan","conpress","contv","confed","conbus"))
+
+    colnames(gallup_data) <- c("refyear","response","Organized Religion","Supreme Court Judge","Education","Congress","Organized Labor","Medicine","Scientific Community","Military", "Financial Institutions","Press","Television","Federal Government","Major Companies")
+    
+# combining data
+df_analysis <- bind_rows(
+  
+  # Gallup scraped data
+gallup_data %>%
+    # Keep ``Great deal``
+    mutate(year = as.numeric(refyear)) %>%
+    filter(response == 7) %>%
+    filter(!year %in% c(2021,2022,2023)),
+  
+  # GSS data already tabulated
+  data_GSS22 %>%
+  filter(!year %in% c(2021,2022)),
+  
+  # Index dataset
+  .id = "DATASET") %>% 
+  
+  # Recode dataset identifier
+  mutate(DATASET = case_when(DATASET == 1 ~ "Gallup",
+                             DATASET == 2 ~ "GSS")) %>% 
+  
+  # Subset data
+  dplyr::select(DATASET, year, c("Organized Religion","Supreme Court Judge","Education","Congress","Organized Labor","Medicine","Scientific Community","Military", "Financial Institutions","Press","Television","Federal Government","Major Companies")) %>% 
+  
+  # Complete the dataframe
+  complete(nesting(DATASET), year = min(year):max(year)) %>% 
+  
+  # Replace NaN's
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% 
+  
+  # Sort descending
+  arrange(year, DATASET)
+```
+
+```{r time series plot for GSS and Gallup}
+GSS_Gallup_ts_plot <- df_analysis %>% 
+  
+  # Place items in rows
+  pivot_longer(cols = c("Organized Religion","Supreme Court Judge","Education","Congress","Organized Labor","Medicine","Scientific Community","Military", "Financial Institutions","Press","Television","Federal Government","Major Companies"),
+               names_to = "ITEM", 
+               values_to = "RES") %>% 
+  
+  # Convert GSS column names to item names
+  mutate(ITEM = str_replace_all(ITEM, Item_Labels)) %>% 
+  
+  filter(!is.na(RES)) %>% 
+  
+  # Make the time series plots
+  ggplot(data    = ., 
+         mapping = aes(x = year, y = RES, color = DATASET)) +
+  
+  # Time series lines
+  geom_line(linewidth = 1, na.rm = T) +
+  
+  # Add points to emphasize overlap 
+  geom_point(size = 1, na.rm = T) +
+  
+  # Apply some basic colors
+  scale_color_manual(name   = element_blank(),
+                     values = c("darkblue",
+                                "darkorange")) +
+  
+  # Labels for the plots
+  labs(y = "Percent Great deal/Quite a lot",
+       x = "",
+       caption = "Source: Authors' calculations using Gallup Poll Social Sections and General Social Survey (2022)") +
+  
+  # Theme
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.caption = element_text(hjust = 0),
+        legend.position = "top",
+        axis.text.x = element_text(angle = 90, hjust = 1)) +
+  
+  # Grid by item
+  facet_wrap(~ITEM, scales = "free_y")
+ggsave(GSS_Gallup_ts_plot, filename = "GSS_Gallup ts plots.png",
+       device = "png",
+       height = 6, width = 8, units = "in")
+```
+
+```{r fig-ols,fig.cap='Pooled OLS Estimates of the Comovement Between GSS and GPSS',fig.width=6,fig.height=8}
+
+#ls_ols_models <- 
+df_least_squares <- df_analysis %>% 
+  
+  # Harmonize the column names with labels
+  rename_all(., ~str_replace_all(.x, Item_Labels)) %>% 
+  
+  # Convert to long form
+  pivot_longer(cols = -c(DATASET, year),
+               names_to = "ITEM", 
+               values_to = "RES") %>% 
+  
+  # Place survey in columns
+  pivot_wider(names_from = "DATASET", values_from = "RES") %>% 
+  
+  # Sort by item
+  arrange(ITEM, year) %>% 
+  
+  # Keep items with at least one overlapping year
+  filter(sum(!is.na(Gallup) & !is.na(GSS)) > 1, .by = ITEM) 
+
+# Level + slope model as fixed effects
+mod_ols <- lm(GSS ~ Gallup + ITEM + Gallup:factor(ITEM), data = df_least_squares)
+
+# Newey-West standard errors
+res_ols <- coeftest(mod_ols, vcov. = NeweyWest(mod_ols, prewhite = FALSE))
+
+
+
+broom::tidy(res_ols) %>% 
+  filter(grepl("Gallup:", term)) %>% 
+  mutate(term = fct_reorder(term, estimate),
+         term = gsub("Gallup:factor\\(ITEM\\)", "", term)) %>%
+  ggplot(aes(estimate, term)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = estimate - 1.96*std.error, xmax = estimate + 1.96*std.error)) +
+  # add in a dotted line at zero
+  geom_vline(xintercept = 0, lty = 2) +
+  labs(
+    x = "Fixed Slope Coefficient on Gallup Item",
+    y = NULL) +
+  # Theme
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.caption = element_text(hjust = 0),
+        legend.position = "top")
+```
+
+```{r ADF tests}
+adf_test_results <- data.frame(c(adf.test(data_GSS3$`Interpersonal Trust`)$p.value, adf.test(data_GSS3$`Financial Institutions`)$p.value, adf.test(data_GSS3$`Major Companies`)$p.value, adf.test(data_GSS3$`Organized Religion`)$p.value, adf.test(data_GSS3$Education)$p.value, adf.test(data_GSS3$`Federal Government`)$p.value, adf.test(data_GSS3$`Organized Labor`)$p.value, adf.test(data_GSS3$Press)$p.value, adf.test(data_GSS3$Medicine)$p.value, adf.test(data_GSS3$Television)$p.value, adf.test(data_GSS3$`Supreme Court Judge`)$p.value, adf.test(data_GSS3$`Scientific Community`)$p.value, adf.test(data_GSS3$Congress)$p.value, adf.test(data_GSS3$Military)$p.value,adf.test(data_GSS3$Response_rate)$p.value), row.names = c("Interpersonal Trust","Financial Institutions","Major Companies","Organized Religion","Education","Federal Government","Organized Labor","Press","Medicine","Television","Supreme Court Judge","Scientific Community","Congress","Military","Response Rate"))
+colnames(adf_test_results) <- "p-value for ADF test"
+adf_test_results%>%
+  kbl(booktabs = TRUE, caption = "Table 1: Checking Stationarity of the Time Series Values")%>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+Our goal is to investigate the relationship between the confidence measures and the response rate over time. For this purpose, we plan to do a co-integration analysis to examine whether the time series are in equilibrium over the long time.
+However, since none of the time series are stationary as they are, we check whether they can be stationarized by differencing, i.e., to simply put if they are I(1), before doing a co-integration analysis.
+
+```{r prerequisites for cointegration analysis for confidence measures and response rates}
+## checking if series are I(1)
+adf_test_results_diff <- data.frame(c(adf.test(diff(data_GSS3$`Interpersonal Trust`,1))$p.value, adf.test(diff(data_GSS3$`Financial Institutions`,1))$p.value, adf.test(diff(data_GSS3$`Major Companies`,1))$p.value, adf.test(diff(data_GSS3$`Organized Religion`,1))$p.value, adf.test(diff(data_GSS3$Education,1))$p.value, adf.test(diff(data_GSS3$`Federal Government`,1))$p.value, adf.test(diff(data_GSS3$`Organized Labor`,1))$p.value, adf.test(diff(data_GSS3$Press,1))$p.value, adf.test(diff(data_GSS3$Medicine,1))$p.value, adf.test(diff(data_GSS3$Television,1))$p.value, adf.test(diff(data_GSS3$`Supreme Court Judge`,1))$p.value, adf.test(diff(data_GSS3$`Scientific Community`,1))$p.value, adf.test(diff(data_GSS3$Congress,1))$p.value, adf.test(diff(data_GSS3$Military,1))$p.value,adf.test(diff(data_GSS3$Response_rate,1))$p.value), row.names = c("Interpersonal Trust","Financial Institutions","Major Companies","Organized Religion","Education","Federal Government","Organized Labor","Press","Medicine","Television","Supreme Court Judge","Scientific Community","Congress","Military","Response Rate"))
+colnames(adf_test_results_diff) <- "p-value for ADF test"
+adf_test_results_diff%>%
+  kbl(booktabs = TRUE, caption = "Table 2: Checking Stationarity of the First Differencd Time Series Values")%>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+As we can see, all the confidence measures except for "major companies" and response rates are I(1). So we perform another level of differencing on the first differenced response rates to make it I(1).
+
+```{r 2nd diff of response rates and major companies trust}
+# checking if response rate and trust in major companies are I(2)
+adf.test(diff(diff(data_GSS3$Response_rate,1),1))$p.value #0.01 hence stationary
+adf.test(diff(diff(data_GSS3$`Major Companies`,1),1))$p.value ##0.01 hence stationary
+```
+
+Next we perform the co-intergration analysis.
+# I HAVE DOUBT ABOUT THE FUNCTION INPUTS. CHECK!
+```{r coint test}
+coint_test <- rbind(coint.test(data_GSS3$Response_rate, data_GSS3$`Interpersonal Trust`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$`Financial Institutions`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$`Major Companies`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$`Organized Religion`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$Education, nlag = 2)[,3],coint.test(data_GSS3$Response_rate, data_GSS3$`Federal Government`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$`Organized Labor`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$Press, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$Medicine, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$Television, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$`Supreme Court Judge`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$`Scientific Community`, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$Congress, nlag = 2)[,3], coint.test(data_GSS3$Response_rate, data_GSS3$Military, nlag = 2)[,3])
+rownames(coint_test) <- c("Interpersonal Trust","Financial Institutions","Major Companies","Organized Religion","Education","Federal Government","Organized Labor","Press","Medicine","Television","Supreme Court Judge","Scientific Community","Congress","Military")
+colnames(coint_test) <- c("No Trend", "Linear Trend", "Quadratic Trend")
+coint_test%>%
+  kbl(booktabs = TRUE, caption = "Table 3: Eagle-Granger Co-integration Test P-values for Response Rates with..")%>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+Since there is no long-time equilibrium detected for any of the trust measures with response rates, we individually investigate the relationship using a regression model, adding time as a predictor and to see how time interacts with the trust measures to draw inference on response rates.
+
+```{r linear models}
+data_GSS33 <- data_GSS3%>%
+  mutate(Year = scale(year, scale=FALSE))
+lm_personal <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Interpersonal Trust`))$coefficients,3)
+lm_fin <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Financial Institutions`))$coefficients,3)
+lm_majorcomp <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Major Companies`))$coefficients,3)
+lm_org_rel <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Organized Religion`))$coefficients,3)
+lm_educ <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$Education))$coefficients,3)
+lm_fed <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Federal Government`))$coefficients,3)
+lm_org_lb <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Organized Labor`))$coefficients,3)
+lm_press <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$Press))$coefficients,3)
+lm_med <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$Medicine))$coefficients,3)
+lm_tv <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$Television))$coefficients,3)
+lm_sc_jdg <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Supreme Court Judge`))$coefficients,3)
+lm_sci_com <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$`Scientific Community`))$coefficients,3)
+lm_congress <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$Congress))$coefficients,3)
+lm_military <- round(summary(lm(data_GSS33$Response_rate~data_GSS33$year*data_GSS33$Military))$coefficients,3)
+```
+
+Since we have a smaller number of observations to run the linear models, we chose to keep our significance level at 0.1 instead of 0.05. Also, we could not add all the confidence measures into one model, because of the smaller number of observations we had. All the models show that the confidence measures in different institutions have a negative impact on the response rate when interacting with time. The estimated coefficient of the interaction is very small, however, it implies that with passing time, the measured confidence in American institutions move in the similar direction as the response rates as captured by GSS. The recent downfall of response rates and this finding raises the question to the core of what drives people being hesitant to respond surveys. Our research does not claim that lowered trust in different institutions as well as at interpersonal level is causally affecting the responsive tendencies of Americans to surveys, because there could be other latent factors that need to be investigated. However, this research tried to take a step towards investigating whether a dimension of social capital, i.e., social trust (both for the institutions and at the person level) have any association with declining response rates over time. In the future, we look forward to investigate the other dimensions of social capital and their effects on response rates. It will also be interesting to use more sophisticated time series regression models with a larger number of observations. While we can not overturn public confidence in institutions overnight, we hope that there will be efforts to make the common people believe in the social good that can be done from measuring their opinion through surveys.
